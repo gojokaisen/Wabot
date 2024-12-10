@@ -4,133 +4,177 @@ const {
     DisconnectReason,
     fetchLatestBaileysVersion,
     makeInMemoryStore,
-    jidDecode,
-    proto,
-    Browsers,
-    PHONENUMBER_MCC
+    Browsers
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const chalk = require('chalk');
 const NodeCache = require('node-cache');
 const readline = require('readline');
-const PhoneNumber = require('awesome-phonenumber');
 
-const store = makeInMemoryStore({
-    logger: pino().child({
-        level: 'silent',
-        stream: 'store'
-    })
-});
+// Import custom modules
+const settings = require('./settings');
+const BotUtils = require('./lib/functions');
+const DatabaseManager = require('./lib/database');
+const CommandHandler = require('./commands/handler');
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const question = (text) => new Promise((resolve) => rl.question(text, resolve));
+class WhatsAppBot {
+    constructor() {
+        this.store = makeInMemoryStore({
+            logger: pino().child({
+                level: 'silent',
+                stream: 'store'
+            })
+        });
 
-async function startBot() {
-    const { version } = await fetchLatestBaileysVersion();
-    const { state, saveCreds } = await useMultiFileAuthState('./session');
-    const msgRetryCounterCache = new NodeCache();
-
-    const usePairingCode = true;
-    const phoneNumber = await question(chalk.bold.green('Enter your WhatsApp phone number (with country code, e.g., +2349159895444): '));
-    const cleanedNumber = phoneNumber.replace(/[^0-9]/g, '');
-
-    if (!Object.keys(PHONENUMBER_MCC).some(v => cleanedNumber.startsWith(v))) {
-        console.log(chalk.red('Invalid phone number format. Must start with country code.'));
-        rl.close();
-        return;
+        this.db = new DatabaseManager();
+        this.utils = BotUtils;
+        this.rl = readline.createInterface({ 
+            input: process.stdin, 
+            output: process.stdout 
+        });
     }
 
-    const sock = makeWASocket({
-        version,
-        logger: pino({ level: 'silent' }),
-        printQRInTerminal: !usePairingCode,
-        browser: Browsers.macOS('Chrome'),
-        auth: {
-            creds: state.creds,
-            keys: state.keys
-        },
-        generateHighQualityLinkPreview: true,
-        msgRetryCounterCache
-    });
+    async initialize() {
+        const { version } = await fetchLatestBaileysVersion();
+        const { state, saveCreds } = await useMultiFileAuthState('./session');
+        const msgRetryCounterCache = new NodeCache();
 
-    store.bind(sock.ev);
+        // Prompt for phone number
+        const phoneNumber = await this.promptPhoneNumber();
 
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr, pairingCode } = update;
+        // Create socket connection
+        this.sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: true,
+            browser: Browsers.macOS('Chrome'),
+            auth: {
+                creds: state.creds,
+                keys: state.keys
+            },
+            generateHighQualityLinkPreview: true,
+            msgRetryCounterCache
+        });
 
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(chalk.yellow('Connection closed. Reconnecting...'));
-            if (shouldReconnect) {
-                startBot();
-            }
-        } else if (connection === 'open') {
-            console.log(chalk.green('Connected successfully!'));
-            console.log(chalk.cyan('Bot is now active and ready to receive messages.'));
-        }
+        // Bind store and setup event listeners
+        this.store.bind(this.sock.ev);
+        this.setupEventListeners(saveCreds);
 
-        if (usePairingCode && !sock.authState.creds.registered) {
-            if (pairingCode) {
-                console.log(chalk.bold.yellow('============================================='));
-                console.log(chalk.green('PAIRING CODE GENERATED'));
-                console.log(chalk.bold.yellow('============================================='));
-                console.log(chalk.cyan('1. Open WhatsApp on your phone'));
-                console.log(chalk.cyan('2. Tap "Linked Devices"'));
-                console.log(chalk.cyan('3. Tap "Link a device"'));
-                console.log(chalk.cyan('4. Select "Paired from computer"'));
-                console.log(chalk.bold.yellow('============================================='));
-                console.log(chalk.red('PAIRING CODE: ') + chalk.bold.white(pairingCode));
-                console.log(chalk.bold.yellow('============================================='));
-            }
-        }
+        // Initialize command handler
+        this.commandHandler = new CommandHandler(this.sock);
 
-        if (qr) {
-            console.log(chalk.red('QR Code generated. Please scan with WhatsApp.'));
-        }
-    });
-
-    if (usePairingCode) {
-        try {
-            const code = await sock.requestPairingCode(cleanedNumber);
-        } catch (error) {
-            console.error(chalk.red('Error requesting pairing code:'), error);
-            rl.close();
-            return;
-        }
+        return this.sock;
     }
 
-    sock.ev.on('creds.update', saveCreds);
+    async promptPhoneNumber() {
+        return new Promise((resolve) => {
+            this.rl.question(chalk.bold.green('Enter your WhatsApp phone number (with country code): '), (number) => {
+                resolve(number.replace(/[^0-9]/g, ''));
+                this.rl.close();
+            });
+        });
+    }
 
-    sock.ev.on('messages.upsert', async (m) => {
-        try {
-            const msg = m.messages[0];
-            if (!msg.message) return;
+    setupEventListeners(saveCreds) {
+        // Connection update listener
+        this.sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
 
-            const messageType = Object.keys(msg.message)[0];
-            
-            if (messageType === 'conversation') {
-                const text = msg.message.conversation;
-                const from = msg.key.remoteJid;
-
-                if (text.startsWith('!ping')) {
-                    await sock.sendMessage(from, { text: 'Pong!' });
+            if (connection === 'close') {
+                const shouldReconnect = 
+                    lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+                
+                console.log(chalk.yellow('Connection closed. Reconnecting...'));
+                
+                if (shouldReconnect) {
+                    this.initialize();
                 }
+            } else if (connection === 'open') {
+                console.log(chalk.green('Connected successfully!'));
+                console.log(chalk.cyan('Bot is now active and ready.'));
             }
-        } catch (error) {
-            console.error('Error processing message:', error);
-        }
-    });
 
-    return sock;
+            if (qr) {
+                console.log(chalk.red('QR Code generated. Please scan with WhatsApp.'));
+            }
+        });
+
+        // Credentials update listener
+        this.sock.ev.on('creds.update', saveCreds);
+
+        // Messages listener
+        this.sock.ev.on('messages.upsert', async (m) => {
+            try {
+                const msg = m.messages[0];
+                if (!msg.message) return;
+
+                // Log user interaction
+                const sender = msg.key.remoteJid;
+                this.logUserInteraction(sender);
+
+                // Handle commands
+                await this.handleCommands(msg);
+            } catch (error) {
+                console.error('Message processing error:', error);
+            }
+        });
+    }
+
+    async handleCommands(msg) {
+        const prefix = settings.PREFIX;
+        const body = msg.message.conversation || '';
+
+        if (body.startsWith(prefix)) {
+            const { command, args } = this.utils.parseCommandArgs(
+                { body }, 
+                prefix
+            );
+
+            try {
+                await this.commandHandler.executeCommand(
+                    command, 
+                    { 
+                        sock: this.sock, 
+                        msg, 
+                        args, 
+                        db: this.db 
+                    }
+                );
+            } catch (error) {
+                console.error(`Command execution error: ${error}`);
+            }
+        }
+    }
+
+    logUserInteraction(sender) {
+        // Update user interaction in database
+        const userData = this.db.getUser(sender) || 
+            this.db.createUser(sender);
+        
+        this.db.updateUser(sender, {
+            last_interaction: new Date().toISOString()
+        });
+    }
+
+    async start() {
+        try {
+            await this.initialize();
+        } catch (error) {
+            console.error('Bot initialization error:', error);
+        }
+    }
 }
 
-startBot().catch(console.error);
-
+// Error handling
 process.on('uncaughtException', (err) => {
     console.error('Uncaught Exception:', err);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('Unhandled Rejection:', reason);
 });
+
+// Start the bot
+const bot = new WhatsAppBot();
+bot.start();
