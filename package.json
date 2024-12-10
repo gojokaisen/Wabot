@@ -1,0 +1,26 @@
+{
+  "name": "whatsapp-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Bot using Baileys",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "dev": "nodemon main.js"
+  },
+  "keywords": ["whatsapp", "bot", "nodejs"],
+  "author": "Frank kaumba & prexzy",
+  "license": "ISC",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.5.0",
+    "awesome-phonenumber": "^5.7.0",
+    "axios": "^1.6.0",
+    "chalk": "^4.1.2",
+    "file-type": "^16.5.4",
+    "libphonenumber-js": "^1.10.14",
+    "nodemon": "^3.0.1",
+    "pino": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
