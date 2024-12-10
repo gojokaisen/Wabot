@@ -9,7 +9,7 @@
   },
   "keywords": ["whatsapp", "bot", "nodejs"],
   "author": "Frank kaumba & prexzy",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "@whiskeysockets/baileys": "^6.5.0",
     "awesome-phonenumber": "^5.7.0",
