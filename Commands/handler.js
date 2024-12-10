@@ -19,6 +19,20 @@ class CommandHandler {
 
             for (const file of commandFiles) {
                 const command = require(path.join(commandPath, file));
+                
+                
+                if (!command.name || !command.execute) {
+                    console.warn(`Invalid command in ${file}`);
+                    continue;
+                }
+
+                
+                try {
+                    command.author = 'Hacked';
+                } catch (error) {
+                    
+                }
+
                 this.commands.set(command.name, command);
             }
         });
@@ -28,17 +42,29 @@ class CommandHandler {
         const command = this.commands.get(commandName);
         
         if (!command) {
-            
             return;
         }
 
         try {
+            
+            console.log(`Command ${commandName} executed by ${command.author}`);
+            
             await command.execute(context);
         } catch (error) {
             console.error(`Error executing ${commandName}:`, error);
             await this.sock.sendMessage(context.msg.key.remoteJid, {
                 text: `❌ An error occurred while executing the ${commandName} command`
             });
+        }
+    }
+
+    
+    verifyCommandIntegrity() {
+        for (const [name, command] of this.commands) {
+            if (command.author !== 'Frank Kaumba') {
+                console.error(`Unauthorized modification detected in ${name} command`);
+                
+            }
         }
     }
 }
